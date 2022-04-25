@@ -2,4 +2,4 @@
 #include <jni.h>
 
 
-jobject create_proxy_instance(const char* className, void* ptr);
+jobject create_proxy_instance(JNIEnv *env, const char* className, void* ptr);

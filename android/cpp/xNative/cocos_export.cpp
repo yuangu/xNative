@@ -4,7 +4,10 @@
 #include "platform/CCApplication.h"
 #include "base/CCScheduler.h"
 #include "xNative/xNative.h"
+#include "xNative/reflect.h"
 #include <vector>
+
+std::string jstring2str(JNIEnv *env, jstring jstr);
 
 class Jvalue : public cocos2d::Ref, public xNativeValue
 {
@@ -14,7 +17,23 @@ public:
         type = v.type;
         jValue = v.jValue;
         isStaticClass = v.isStaticClass;
+
+        if(v.type == NativeValueType_object)
+        {
+            JNIEnv* env =  cocos2d::JniHelper::getEnv();
+            jValue.l = env->NewGlobalRef(jValue.l);
+        }
     }
+
+    virtual ~Jvalue()
+    {
+        if(type == NativeValueType_object)
+        {
+            JNIEnv* env = (env == nullptr?cocos2d::JniHelper::getEnv():env);
+            env->DeleteGlobalRef(jValue.l);
+        }
+    }
+
 };
 
 xNativeValue toxNativeValue(const se::Value &nodeVal)
@@ -83,9 +102,26 @@ void toSeValue(const xNativeValue &val, se::Value *ret)
     }
     else if (val.type == NativeValueType_object)
     {
-        Jvalue *v = new Jvalue;
-        *v = val;
-        native_ptr_to_seval<Jvalue>((Jvalue *)v, ret);
+        if(val.jValue.l == nullptr)
+        {
+            ret->setNull();
+            return;
+        }
+
+        JNIEnv *env = cocos2d::JniHelper::getEnv();
+
+        jclass jClass = Object_getClass(env, (jclass)(val.jValue.l));
+
+        jobject name2 = Class_getTypeName(env, jClass);
+        std::string nameStdStr = jstring2str(env, (jstring) name2);
+        if(nameStdStr == std::string("java.lang.String"))
+        {
+            ret->setString(jstring2str(env, (jstring) val.jValue.l));
+        }else{
+            Jvalue *v = new Jvalue;
+            *v = val;
+            native_ptr_to_seval<Jvalue>((Jvalue *)v, ret);
+        }
     }
 }
 
@@ -108,7 +144,9 @@ extern "C"
                 values.push_back(toxNativeValue(args[i]));
             }
 
-            *ret = newObject(className.c_str(), values.size(), values.size() == 0 ? nullptr : &(values[0]));
+            JNIEnv *env = cocos2d::JniHelper::getEnv();
+
+            *ret = newObject(env, className.c_str(), values.size(), values.size() == 0 ? nullptr : &(values[0]));
 
             ok &= native_ptr_to_seval<Jvalue>((Jvalue *)ret, &s.rval());
             return true;
@@ -131,7 +169,8 @@ extern "C"
             std::string className;
             seval_to_std_string(args[0], &className);
 
-            *ret = importClass(className.c_str());
+            JNIEnv *env = cocos2d::JniHelper::getEnv();
+            *ret = importClass(env, className.c_str());
 
             ok &= native_ptr_to_seval<Jvalue>((Jvalue *)ret, &s.rval());
             return true;
@@ -170,7 +209,8 @@ extern "C"
                 values.push_back(toxNativeValue(args[i]));
             }
 
-            xNativeValue val = invoke((xNativeValue *)arg0, methodName.c_str(), values.size(), values.size() == 0 ? nullptr : &(values[0]));
+            JNIEnv *env = cocos2d::JniHelper::getEnv();
+            xNativeValue val = invoke(env, (xNativeValue *)arg0, methodName.c_str(), values.size(), values.size() == 0 ? nullptr : &(values[0]));
             toSeValue(val, &s.rval());
             return true;
         }
@@ -193,7 +233,8 @@ extern "C"
             Jvalue *ret = new Jvalue;
             se::Value *ptr = new se::Value(args[1]);
 
-            *ret = implements(intefaceName.c_str(), ptr);
+            JNIEnv* env = cocos2d::JniHelper::getEnv();
+            *ret = implements(env,intefaceName.c_str(), ptr);
 
             ok &= native_ptr_to_seval<Jvalue>((Jvalue *)ret, &s.rval());
 
@@ -224,7 +265,8 @@ extern "C"
             std::string attributeName;
             seval_to_std_string(args[1], &attributeName);
 
-            xNativeValue value = getAttribute((xNativeValue *)arg0, attributeName.c_str());
+            JNIEnv* env = cocos2d::JniHelper::getEnv();
+            xNativeValue value = getAttribute(env, (xNativeValue *)arg0, attributeName.c_str());
 
             toSeValue(value, &s.rval());
 
@@ -255,7 +297,8 @@ extern "C"
             seval_to_std_string(args[1], &attributeName);
 
             xNativeValue value = toxNativeValue(args[2]);
-            setAttribute((xNativeValue *)arg0, attributeName.c_str(), &value);
+            JNIEnv* env = cocos2d::JniHelper::getEnv();
+            setAttribute(env, (xNativeValue *)arg0, attributeName.c_str(), &value);
 
             return true;
         }
@@ -263,10 +306,25 @@ extern "C"
     }
     SE_BIND_FUNC(xNative_setAttribute);
 
+    static bool xNative_runtimeMainActivity(se::State &s)
+    {
+        const auto &args = s.args();
+        int argc = (int)args.size();
+
+        xNativeValue ret;
+        ret.type = NativeValueType_object;
+        ret.isStaticClass = false;
+        JNIEnv* env = cocos2d::JniHelper::getEnv();
+        ret.jValue.l = callObjectStaticJavaMethod( env, "org/cocos2dx/lib/Cocos2dxActivity", "getContext", "()Landroid/content/Context;");
+        toSeValue(ret, &s.rval());
+
+        return true;
+    }
+    SE_BIND_FUNC(xNative_runtimeMainActivity);
+
+
     bool js_register_plus_andorid(se::Object *global)
     {
-        setJniEnv(cocos2d::JniHelper::getEnv());
-
         se::HandleObject obj(se::Object::createPlainObject());
         se::Value objVal;
         objVal.setObject(obj);
@@ -279,6 +337,7 @@ extern "C"
         cls->defineStaticFunction("implements", _SE(xNative_implements));
         cls->defineStaticFunction("getAttribute", _SE(xNative_getAttribute));
         cls->defineStaticFunction("setAttribute", _SE(xNative_setAttribute));
+        cls->defineStaticFunction("runtimeMainActivity", _SE(xNative_runtimeMainActivity));
         cls->install();
 
         auto cls2 = se::Class::create("Jvalue", obj.get(), nullptr, nullptr);
@@ -292,9 +351,8 @@ extern "C"
     }
 }
 
-void script_invoke0(void *ptr, std::string name)
+void script_invoke0(void *ptr, std::string name, std::vector<xNativeValue>& invoke_args)
 {
-    auto id = std::hash<std::thread::id>{}(std::this_thread::get_id());
     auto scheduler = cocos2d::Application::getInstance()->getScheduler();
     scheduler->performFunctionInCocosThread([=]()
                                             {
@@ -303,10 +361,22 @@ void script_invoke0(void *ptr, std::string name)
 
         se::Object *object = ((se::Value *) ptr)->toObject();
         se::Value func;
-        object->getProperty("test", &func);
+        object->getProperty(name.c_str(), &func);
         if (func.isObject() && func.toObject()->isFunction()) {
             se::ValueArray args;
-//        args.push_back(se::Value(_jsResizeEventObj));
+
+            for(auto it = invoke_args.begin(); it != invoke_args.end(); ++it)
+            {
+                se::Value v;
+                toSeValue(*it, &v);
+                args.push_back(v);
+
+                if(v.isString())
+                {
+                    cocos2d::JniHelper::getEnv()->DeleteGlobalRef(it->jValue.l);
+                }
+            }
+
             func.toObject()->call(args, nullptr);
         } });
 }

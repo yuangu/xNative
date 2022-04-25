@@ -18,6 +18,11 @@ enum xNativeValueType
 
 typedef struct xNativeValue
 {
+    xNativeValue()
+    {
+        isStaticClass = false;
+    }
+
     xNativeValueType type;
     jvalue jValue;
     bool isStaticClass;  // 用于区分invoke是调用静态方法还是实例方法

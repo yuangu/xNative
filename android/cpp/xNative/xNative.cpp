@@ -4,16 +4,6 @@
 #include <vector>
 #include "proxy.h"
 
-JNIEnv *g_jniEnv = nullptr;
-
-JNIEnv *getJniEnv() {
-    return g_jniEnv;
-}
-
-void setJniEnv(JNIEnv *env) {
-    g_jniEnv = env;
-}
-
 std::string
 replace_all(std::string str, const std::string &old_value, const std::string &new_value) {
     while (true) {
@@ -40,19 +30,19 @@ std::map <std::string, std::string> SignatureMap = {
         {"void",    "V"},
 };
 
-xNativeValue newObject(const char *className, int args, xNativeValue *argv) {
-    jclass jClass = Class_forName(className);
-    jobjectArray array = (jobjectArray) Class_getConstructors(jClass);
+xNativeValue newObject(JNIEnv *env, const char *className, int args, xNativeValue *argv) {
+    jclass jClass = Class_forName(env, className);
+    jobjectArray array = (jobjectArray) Class_getConstructors(env, jClass);
+    xNativeValue ret;
 
-    JNIEnv *env = getJniEnv();
     jsize len = env->GetArrayLength(array);
     for (int i = 0; i < len; ++i) {
         jobject tmp = env->GetObjectArrayElement((jobjectArray) array, i);
-        jobject name = Constructor_getName((jclass) tmp);
+        jobject name = Constructor_getName(env, (jclass) tmp);
         std::string nameStdStr = jstring2str(env, (jstring) name);
         printf("%s", nameStdStr.c_str());
 
-        jarray parameterTypes = (jarray) Constructor_getParameterTypes((jclass) tmp);
+        jarray parameterTypes = (jarray) Constructor_getParameterTypes(env, (jclass) tmp);
 
         if (env->GetArrayLength(parameterTypes) != args) {
             continue;
@@ -62,7 +52,7 @@ xNativeValue newObject(const char *className, int args, xNativeValue *argv) {
         std::string sig = "(";
         for (int j = 0; j < args; j++) {
             jobject tmp2 = env->GetObjectArrayElement((jobjectArray) parameterTypes, j);
-            jobject name2 = Class_getTypeName((jclass) tmp2);
+            jobject name2 = Class_getTypeName(env, (jclass) tmp2);
             std::string nameStdStr = jstring2str(env, (jstring) name2);
             std::map<std::string, std::string>::iterator it = SignatureMap.find(nameStdStr);
             if (it != SignatureMap.end()) {
@@ -76,17 +66,18 @@ xNativeValue newObject(const char *className, int args, xNativeValue *argv) {
         sig += ")V";
         jmethodID init = env->GetMethodID(jClass, "<init>", sig.c_str());
         jobject object = env->NewObjectA(jClass, init, vaules.size() == 0 ? nullptr : &(vaules[0]));
-        xNativeValue ret;
+
         ret.jValue.l = object;
         ret.type = NativeValueType_object;
         ret.isStaticClass = false;
         return ret;
     }
+    return ret;
 }
 
-xNativeValue importClass(const char *className) {
+xNativeValue importClass(JNIEnv *env, const char *className) {
     xNativeValue ret;
-    jclass jClass = Class_forName(className);
+    jclass jClass = Class_forName(env, className);
     ret.isStaticClass = true;
     ret.jValue.l = jClass;
     ret.type = NativeValueType_object;
@@ -94,33 +85,33 @@ xNativeValue importClass(const char *className) {
     return ret;
 }
 
-xNativeValue invoke(xNativeValue *object, const char *name, int args, xNativeValue *argv) {
+xNativeValue invoke(JNIEnv *env, xNativeValue *object, const char *name, int args, xNativeValue *argv) {
     xNativeValue ret;
     if (object->type != NativeValueType_object) {
         // log for here
         return ret;
     }
-    JNIEnv *env = getJniEnv();
+
     bool isStaticClass = object->isStaticClass;
     jclass jClass = nullptr;
     if (isStaticClass) {
         jClass = (jclass)(object->jValue.l);
     } else {
-        jClass = Object_getClass((jclass)(object->jValue.l));
+        jClass = Object_getClass(env, (jclass)(object->jValue.l));
     }
 
-    jobjectArray array = (jobjectArray) Class_getMethods(jClass);
+    jobjectArray array = (jobjectArray) Class_getMethods(env,  jClass);
     jsize len = env->GetArrayLength(array);
     std::string nameStdStr = name;
 
     for (int i = 0; i < len; ++i) {
         jobject tmp = env->GetObjectArrayElement((jobjectArray) array, i);
-        jobject name = Method_getName((jclass) tmp);
+        jobject name = Method_getName(env, (jclass) tmp);
         std::string _nameStdStr = jstring2str(env, (jstring) name);
         if (_nameStdStr != nameStdStr) {
             continue;
         }
-        jarray parameterTypes = (jarray) Method_getParameterTypes((jclass) tmp);
+        jarray parameterTypes = (jarray) Method_getParameterTypes(env,  (jclass) tmp);
 
         if (env->GetArrayLength(parameterTypes) != args) {
             continue;
@@ -130,7 +121,7 @@ xNativeValue invoke(xNativeValue *object, const char *name, int args, xNativeVal
         std::string sig = "(";
         for (int j = 0; j < args; j++) {
             jobject tmp2 = env->GetObjectArrayElement((jobjectArray) parameterTypes, j);
-            jobject name2 = Class_getTypeName((jclass) tmp2);
+            jobject name2 = Class_getTypeName(env,  (jclass) tmp2);
             std::string nameStdStr = jstring2str(env, (jstring) name2);
             std::map<std::string, std::string>::iterator it = SignatureMap.find(nameStdStr);
             if (it != SignatureMap.end()) {
@@ -143,8 +134,9 @@ xNativeValue invoke(xNativeValue *object, const char *name, int args, xNativeVal
         }
 
         //返回类型
-        jobject returnType = Method_getReturnType((jclass) tmp);
-        jobject name2 = Class_getTypeName((jclass) returnType);
+        jobject returnType = Method_getReturnType(env, (jclass) tmp);
+        jobject name2 = Class_getTypeName(env, (jclass) returnType);
+        if(name2 == nullptr) return ret;
         std::string returnName = jstring2str(env, (jstring) name2);
         std::map<std::string, std::string>::iterator it = SignatureMap.find(returnName);
         sig += ")";
@@ -269,6 +261,7 @@ xNativeValue invoke(xNativeValue *object, const char *name, int args, xNativeVal
                 ret.jValue.l = env->CallObjectMethodA((jclass)(object->jValue.l), jmethodId,
                                                       vaules.size() == 0 ? nullptr : &(vaules[0]));
             }
+            ret.isStaticClass = false;
             ret.type = NativeValueType_object;
         }
 
@@ -277,28 +270,28 @@ xNativeValue invoke(xNativeValue *object, const char *name, int args, xNativeVal
     return ret;
 }
 
-xNativeValue implements(const char *name, void *obj) {
+xNativeValue implements(JNIEnv *env, const char *name, void *obj) {
     xNativeValue ret;
-    ret.jValue.l = create_proxy_instance(name, obj);
+    ret.jValue.l = create_proxy_instance(env,name, obj);
     ret.type = NativeValueType_object;
     return ret;
 }
 
-xNativeValue getAttribute(xNativeValue *object, const char *attributteName) {
-    JNIEnv *env = getJniEnv();
+xNativeValue getAttribute(JNIEnv *env, xNativeValue *object, const char *attributteName) {
+
     xNativeValue ret;
-    jclass jClass = Object_getClass((jclass)(object->jValue.l));
-    jobjectArray array = (jobjectArray) Class_getFields(jClass);
+    jclass jClass = Object_getClass(env,(jclass)(object->jValue.l));
+    jobjectArray array = (jobjectArray) Class_getFields(env,jClass);
     jsize len = env->GetArrayLength(array);
     std::string nameStdStr = attributteName;
     for (int i = 0; i < len; ++i) {
         jobject tmp = env->GetObjectArrayElement((jobjectArray) array, i);
-        jobject name = Field_getName((jclass) tmp);
+        jobject name = Field_getName(env,(jclass) tmp);
         std::string _nameStdStr = jstring2str(env, (jstring) name);
         if (_nameStdStr != nameStdStr) {
             continue;
         }
-        jobject name2 = Field_getType((jclass) tmp);
+        jobject name2 = Field_getType(env,(jclass) tmp);
         std::string nameStdStr = jstring2str(env, (jstring) name2);
 
         std::map<std::string, std::string>::iterator it = SignatureMap.find(nameStdStr);
@@ -346,20 +339,20 @@ xNativeValue getAttribute(xNativeValue *object, const char *attributteName) {
     return ret;
 }
 
-void setAttribute(xNativeValue *object, const char *attributteName, xNativeValue *value) {
-    JNIEnv *env = getJniEnv();
-    jclass jClass = Object_getClass((jclass)(object->jValue.l));
-    jobjectArray array = (jobjectArray) Class_getFields(jClass);
+void setAttribute(JNIEnv *env, xNativeValue *object, const char *attributteName, xNativeValue *value) {
+
+    jclass jClass = Object_getClass(env,(jclass)(object->jValue.l));
+    jobjectArray array = (jobjectArray) Class_getFields(env,jClass);
     jsize len = env->GetArrayLength(array);
     std::string nameStdStr = attributteName;
     for (int i = 0; i < len; ++i) {
         jobject tmp = env->GetObjectArrayElement((jobjectArray) array, i);
-        jobject name = Field_getName((jclass) tmp);
+        jobject name = Field_getName(env,(jclass) tmp);
         std::string _nameStdStr = jstring2str(env, (jstring) name);
         if (_nameStdStr != nameStdStr) {
             continue;
         }
-        jobject name2 = Field_getType((jclass) tmp);
+        jobject name2 = Field_getType(env, (jclass) tmp);
         std::string nameStdStr = jstring2str(env, (jstring) name2);
 
         std::map<std::string, std::string>::iterator it = SignatureMap.find(nameStdStr);
